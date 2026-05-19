@@ -667,7 +667,7 @@ type ContentItem struct {
 }
 
 type Error struct {
-	Code    int    `json:"code"`
+	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
