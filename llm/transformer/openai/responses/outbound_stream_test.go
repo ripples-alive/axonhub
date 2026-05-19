@@ -132,6 +132,41 @@ func TestOutboundTransformer_StreamTransformation_ErrorEvent(t *testing.T) {
 	require.Contains(t, err.Error(), "Something went wrong")
 }
 
+func TestOutboundTransformer_StreamTransformation_ResponseFailedWithStringCode(t *testing.T) {
+	trans, err := NewOutboundTransformer("https://api.openai.com", "test-api-key")
+	require.NoError(t, err)
+
+	events := []*httpclient.StreamEvent{
+		{
+			Type: "response.failed",
+			Data: []byte(`{
+				"type":"response.failed",
+				"response":{
+					"id":"resp_failed",
+					"object":"response",
+					"created_at":1700000000,
+					"model":"gpt-5.5",
+					"status":"failed",
+					"error":{
+						"code":"server_error",
+						"message":"Something went wrong"
+					},
+					"output":[]
+				}
+			}`),
+		},
+	}
+
+	transformedStream, err := trans.TransformStream(t.Context(), streams.SliceStream(events))
+	require.NoError(t, err)
+
+	actual, err := streams.All(transformedStream)
+	require.NoError(t, err)
+	require.Len(t, actual, 2)
+	require.Equal(t, "error", *actual[0].Choices[0].FinishReason)
+	require.Equal(t, llm.DoneResponse, actual[1])
+}
+
 func TestOutboundTransformer_TransformStream_PreservesPreviousResponseID(t *testing.T) {
 	trans, err := NewOutboundTransformer("https://api.openai.com", "test-api-key")
 	require.NoError(t, err)
