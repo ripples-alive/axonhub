@@ -155,6 +155,199 @@ func TestCodexOutbound_CustomizeExecutorAggregatesNonStreamRequests(t *testing.T
 	assert.Equal(t, "gpt-5-codex", body["model"])
 }
 
+func TestCodexOutbound_TransformsImageGenerationToResponsesTool(t *testing.T) {
+	ctx := context.Background()
+	outbound := newTestCodexOutbound(t)
+
+	hreq, err := outbound.TransformRequest(ctx, &llm.Request{
+		Model:       "gpt-image-2",
+		RequestType: llm.RequestTypeImage,
+		APIFormat:   llm.APIFormatOpenAIImageGeneration,
+		Image: &llm.ImageRequest{
+			Prompt:       "Draw a request flow",
+			Size:         "1024x1024",
+			Quality:      "high",
+			OutputFormat: "png",
+		},
+	})
+	require.NoError(t, err)
+
+	body := decodeCodexRequestBody(t, hreq)
+	require.Equal(t, defaultImageMainModel, body["model"])
+	require.Equal(t, true, body["stream"])
+	require.Equal(t, false, body["store"])
+	toolChoice, ok := body["tool_choice"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "image_generation", toolChoice["type"])
+	require.NotContains(t, toolChoice, "name")
+	require.Equal(t, string(llm.RequestTypeImage), hreq.RequestType)
+
+	tools, ok := body["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "image_generation", tool["type"])
+	require.Equal(t, "gpt-image-2", tool["model"])
+	require.Equal(t, "1024x1024", tool["size"])
+	require.Equal(t, "high", tool["quality"])
+	require.Equal(t, "png", tool["output_format"])
+
+	input, ok := body["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 1)
+	message, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	content, ok := message["content"].([]any)
+	require.True(t, ok)
+	require.Len(t, content, 1)
+	text, ok := content[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "input_text", text["type"])
+	require.Equal(t, "Draw a request flow", text["text"])
+}
+
+func TestCodexOutbound_ImageRequestDoesNotMutateTransformerMetadata(t *testing.T) {
+	ctx := context.Background()
+	outbound := newTestCodexOutbound(t)
+	metadata := map[string]any{"existing": "value"}
+
+	_, err := outbound.TransformRequest(ctx, &llm.Request{
+		Model:               "gpt-image-2",
+		RequestType:         llm.RequestTypeImage,
+		APIFormat:           llm.APIFormatOpenAIImageGeneration,
+		TransformerMetadata: metadata,
+		Image: &llm.ImageRequest{
+			Prompt:       "Draw a request flow",
+			OutputFormat: "png",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{"existing": "value"}, metadata)
+}
+
+func TestCodexOutbound_ImageRequestRejectsMultipleImages(t *testing.T) {
+	ctx := context.Background()
+	outbound := newTestCodexOutbound(t)
+	n := int64(2)
+
+	_, err := outbound.TransformRequest(ctx, &llm.Request{
+		Model:       "gpt-image-2",
+		RequestType: llm.RequestTypeImage,
+		APIFormat:   llm.APIFormatOpenAIImageGeneration,
+		Image: &llm.ImageRequest{
+			Prompt: "Draw a request flow",
+			N:      &n,
+		},
+	})
+	require.ErrorContains(t, err, "codex image generation supports n=1 only")
+}
+
+func TestCodexOutbound_TransformsImageEditToResponsesTool(t *testing.T) {
+	ctx := context.Background()
+	outbound := newTestCodexOutbound(t)
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0}
+
+	hreq, err := outbound.TransformRequest(ctx, &llm.Request{
+		Model:       "gpt-image-2",
+		RequestType: llm.RequestTypeImage,
+		APIFormat:   llm.APIFormatOpenAIImageEdit,
+		Image: &llm.ImageRequest{
+			Prompt:       "Edit this image",
+			Images:       [][]byte{png},
+			Mask:         png,
+			Size:         "1024x1024",
+			Quality:      "high",
+			OutputFormat: "png",
+		},
+	})
+	require.NoError(t, err)
+
+	body := decodeCodexRequestBody(t, hreq)
+	tools := body["tools"].([]any)
+	tool := tools[0].(map[string]any)
+	require.Equal(t, "image_generation", tool["type"])
+	require.Equal(t, "gpt-image-2", tool["model"])
+	require.Equal(t, "high", tool["quality"])
+	require.Equal(t, "png", tool["output_format"])
+	require.Contains(t, tool, "input_image_mask")
+
+	input := body["input"].([]any)
+	message := input[0].(map[string]any)
+	content := message["content"].([]any)
+	require.Len(t, content, 2)
+	imagePart := content[1].(map[string]any)
+	require.Equal(t, "input_image", imagePart["type"])
+	require.True(t, strings.HasPrefix(imagePart["image_url"].(string), "data:image/png;base64,"))
+}
+
+func TestCodexOutbound_ImageResponseWrapsB64JSON(t *testing.T) {
+	ctx := context.Background()
+	outbound := newTestCodexOutbound(t)
+	hreq := &httpclient.Request{
+		RequestType: string(llm.RequestTypeImage),
+		TransformerMetadata: map[string]any{
+			"image_output_format":       "png",
+			"codex_image_request_model": "gpt-image-2",
+		},
+	}
+	respBody := []byte(`{
+		"id":"resp_img",
+		"object":"response",
+		"created_at":1700000000,
+		"model":"gpt-5.4-mini",
+		"status":"completed",
+		"output":[{
+			"id":"ig_1",
+			"type":"image_generation_call",
+			"status":"completed",
+			"result":"aW1hZ2U="
+		}]
+	}`)
+
+	resp, err := outbound.TransformResponse(ctx, &httpclient.Response{
+		StatusCode: http.StatusOK,
+		Body:       respBody,
+		Request:    hreq,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Image)
+	require.Len(t, resp.Image.Data, 1)
+	require.Equal(t, "aW1hZ2U=", resp.Image.Data[0].B64JSON)
+	require.Equal(t, defaultImageMainModel, resp.Model)
+}
+
+func TestCodexOutbound_ImageResponseWrapsAggregatedStreamResult(t *testing.T) {
+	ctx := context.Background()
+	outbound := newTestCodexOutbound(t)
+	hreq := &httpclient.Request{
+		RequestType: string(llm.RequestTypeImage),
+		TransformerMetadata: map[string]any{
+			"image_output_format":       "png",
+			"codex_image_request_model": "gpt-image-2",
+		},
+	}
+	executor := outbound.CustomizeExecutor(&mockCodexExecutor{
+		streamEvents: []*httpclient.StreamEvent{
+			{Type: "response.created", Data: []byte(`{"type":"response.created","sequence_number":0,"response":{"id":"resp_img","object":"response","created_at":1700000000,"model":"gpt-5.4-mini","status":"in_progress","output":[]}}`)},
+			{Type: "response.output_item.done", Data: []byte(`{"type":"response.output_item.done","sequence_number":1,"output_index":0,"item":{"id":"ig_1","type":"image_generation_call","status":"completed","result":"aW1hZ2U=","output_format":"png","quality":"high","size":"1024x1024"}}`)},
+			{Type: "response.completed", Data: []byte(`{"type":"response.completed","sequence_number":2,"response":{"id":"resp_img","object":"response","created_at":1700000000,"model":"gpt-5.4-mini","status":"completed","output":[{"id":"ig_1","type":"image_generation_call","status":"completed","result":"aW1hZ2U=","output_format":"png","quality":"high","size":"1024x1024"}]}}`)},
+		},
+	})
+
+	httpResp, err := executor.Do(ctx, hreq)
+	require.NoError(t, err)
+
+	resp, err := outbound.TransformResponse(ctx, httpResp)
+	require.NoError(t, err)
+	require.NotNil(t, resp.Image)
+	require.Len(t, resp.Image.Data, 1)
+	require.Equal(t, "aW1hZ2U=", resp.Image.Data[0].B64JSON)
+	require.Equal(t, "png", resp.Image.OutputFormat)
+	require.Equal(t, "high", resp.Image.Quality)
+	require.Equal(t, "1024x1024", resp.Image.Size)
+}
+
 var _ pipeline.ChannelCustomizedExecutor = (*OutboundTransformer)(nil)
 
 type mockCodexExecutor struct {

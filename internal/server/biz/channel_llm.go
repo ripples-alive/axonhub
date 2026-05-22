@@ -41,6 +41,8 @@ import (
 	"github.com/looplj/axonhub/llm/transformer/zai"
 )
 
+const codexBuiltinImageModelID = "gpt-image-2"
+
 type AutoRefresher interface {
 	StartAutoRefresh(ctx context.Context, opts oauth.AutoRefreshOptions)
 	StopAutoRefresh()
@@ -871,6 +873,16 @@ func (ch *Channel) GetModelEntries() map[string]ChannelModelEntry {
 				RequestModel: model,
 				ActualModel:  model,
 				Source:       "direct",
+			}
+		}
+	}
+
+	if ch.Type == channel.TypeCodex {
+		if _, exists := entries[codexBuiltinImageModelID]; !exists {
+			entries[codexBuiltinImageModelID] = ChannelModelEntry{
+				RequestModel: codexBuiltinImageModelID,
+				ActualModel:  codexBuiltinImageModelID,
+				Source:       "builtin",
 			}
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/looplj/axonhub/internal/ent"
+	"github.com/looplj/axonhub/internal/ent/channel"
 	"github.com/looplj/axonhub/internal/objects"
 )
 
@@ -252,4 +253,22 @@ func TestChannel_GetUnifiedModels_CachesResult(t *testing.T) {
 	// Second call should return the same cached map
 	result2 := ch.GetModelEntries()
 	require.Equal(t, result1, result2)
+}
+
+func TestChannel_GetUnifiedModels_CodexBuiltinImageModel(t *testing.T) {
+	ch := &Channel{
+		Channel: &ent.Channel{
+			Type:            channel.TypeCodex,
+			SupportedModels: []string{"gpt-5-codex"},
+		},
+	}
+
+	result := ch.GetModelEntries()
+	require.Contains(t, result, "gpt-5-codex")
+	require.Contains(t, result, codexBuiltinImageModelID)
+	require.Equal(t, ChannelModelEntry{
+		RequestModel: codexBuiltinImageModelID,
+		ActualModel:  codexBuiltinImageModelID,
+		Source:       "builtin",
+	}, result[codexBuiltinImageModelID])
 }
