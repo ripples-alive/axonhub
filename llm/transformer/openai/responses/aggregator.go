@@ -27,6 +27,10 @@ type streamAggregator struct {
 	// Fast lookup by item.id (and a fallback for cases where an upstream sends call_id as item_id).
 	outputItemsByID map[string]*aggregatedItem
 
+	// Final response output, used as a fallback when an upstream only includes
+	// completed items in response.completed.
+	completedOutput []Item
+
 	// Usage
 	usage *Usage
 }
@@ -41,6 +45,13 @@ type aggregatedItem struct {
 	Name             string
 	Arguments        *strings.Builder
 	EncryptedContent *string
+
+	// For image_generation_call type
+	Background   *string
+	OutputFormat *string
+	Quality      *string
+	Result       *string
+	Size         *string
 
 	// For custom_tool_call type
 	Input *string
@@ -236,6 +247,11 @@ func (a *streamAggregator) processEvent(ev *StreamEvent) {
 			item.Arguments.WriteString(ev.Item.Arguments)
 			item.EncryptedContent = ev.Item.EncryptedContent
 			item.Input = ev.Item.Input
+			item.Background = ev.Item.Background
+			item.OutputFormat = ev.Item.OutputFormat
+			item.Quality = ev.Item.Quality
+			item.Result = ev.Item.Result
+			item.Size = ev.Item.Size
 
 			if len(ev.Item.Summary) > 0 {
 				for idx, s := range ev.Item.Summary {
@@ -415,6 +431,11 @@ func (a *streamAggregator) processEvent(ev *StreamEvent) {
 				item = a.lastItemByOutputIndex(ev.OutputIndex)
 			}
 			if item != nil {
+				item.ID = ev.Item.ID
+				item.Type = ev.Item.Type
+				item.Role = ev.Item.Role
+				item.CallID = ev.Item.CallID
+				item.Name = ev.Item.Name
 				if ev.Item.Status != nil {
 					item.Status = *ev.Item.Status
 				}
@@ -441,6 +462,16 @@ func (a *streamAggregator) processEvent(ev *StreamEvent) {
 				if ev.Item.EncryptedContent != nil {
 					item.EncryptedContent = ev.Item.EncryptedContent
 				}
+
+				item.Background = ev.Item.Background
+				item.OutputFormat = ev.Item.OutputFormat
+				item.Quality = ev.Item.Quality
+				item.Result = ev.Item.Result
+				item.Size = ev.Item.Size
+
+				if item.ID != "" {
+					a.outputItemsByID[item.ID] = item
+				}
 			}
 		}
 
@@ -448,6 +479,7 @@ func (a *streamAggregator) processEvent(ev *StreamEvent) {
 		a.status = "completed"
 		if ev.Response != nil {
 			a.previousResponseID = ev.Response.PreviousResponseID
+			a.completedOutput = ev.Response.Output
 			if ev.Response.Usage != nil {
 				a.usage = ev.Response.Usage
 			}
@@ -524,6 +556,18 @@ func (a *streamAggregator) buildResponse() *Response {
 					Input:  item.Input,
 				})
 
+			case "image_generation_call":
+				output = append(output, Item{
+					ID:           item.ID,
+					Type:         item.Type,
+					Status:       lo.ToPtr(item.Status),
+					Background:   item.Background,
+					OutputFormat: item.OutputFormat,
+					Quality:      item.Quality,
+					Result:       item.Result,
+					Size:         item.Size,
+				})
+
 			case "reasoning":
 				var summary []ReasoningSummary
 				if len(item.SummaryParts) > 0 {
@@ -573,6 +617,10 @@ func (a *streamAggregator) buildResponse() *Response {
 				})
 			}
 		}
+	}
+
+	if len(output) == 0 && len(a.completedOutput) > 0 {
+		output = a.completedOutput
 	}
 
 	return &Response{

@@ -33,7 +33,7 @@ type ChannelModelEntry struct {
 	ActualModel string
 
 	// Source indicates how this model is supported
-	Source string // "direct", "prefix", "auto_trim", "mapping"
+	Source string // "direct", "prefix", "auto_trim", "mapping", "builtin"
 }
 
 type Channel struct {

@@ -222,3 +222,90 @@ func TestOutboundTransformer_TransformStream_PreservesPreviousResponseID(t *test
 	require.Equal(t, "resp_prev_123", *actual[2].PreviousResponseID)
 	require.Equal(t, llm.DoneResponse, actual[3])
 }
+
+func TestOutboundTransformer_TransformStream_EmitsPartialImageContent(t *testing.T) {
+	trans, err := NewOutboundTransformer("https://api.openai.com", "test-api-key")
+	require.NoError(t, err)
+
+	events := []*httpclient.StreamEvent{
+		{
+			Type: "response.created",
+			Data: []byte(`{
+				"type":"response.created",
+				"response":{
+					"id":"resp_img_stream",
+					"object":"response",
+					"created_at":1759161016,
+					"model":"gpt-4o",
+					"status":"in_progress",
+					"output":[]
+				}
+			}`),
+		},
+		{
+			Type: "response.image_generation_call.partial_image",
+			Data: []byte(`{
+				"type":"response.image_generation_call.partial_image",
+				"sequence_number":1,
+				"partial_image_b64":"aW1nLXBhcnRpYWw="
+			}`),
+		},
+		{
+			Type: "response.completed",
+			Data: []byte(`{
+				"type":"response.completed",
+				"response":{
+					"id":"resp_img_stream",
+					"object":"response",
+					"created_at":1759161016,
+					"model":"gpt-4o",
+					"status":"completed",
+					"output":[
+						{
+							"id":"img_1",
+							"type":"image_generation_call",
+							"status":"completed",
+							"result":"aW1nLWZpbmFs",
+							"output_format":"png",
+							"quality":"high",
+							"size":"1024x1024"
+						}
+					]
+				}
+			}`),
+		},
+	}
+
+	stream, err := trans.TransformStream(context.Background(), streams.SliceStream(events))
+	require.NoError(t, err)
+
+	actual, err := streams.All(stream)
+	require.NoError(t, err)
+	require.NotEmpty(t, actual)
+
+	var sawPartialImage bool
+	var sawFinalImage bool
+	for _, resp := range actual {
+		if resp == nil || len(resp.Choices) == 0 || resp.Choices[0].Delta == nil {
+			continue
+		}
+
+		parts := resp.Choices[0].Delta.Content.MultipleContent
+		for _, part := range parts {
+			if part.Type != "image_url" || part.ImageURL == nil {
+				continue
+			}
+
+			if part.ImageURL.URL == "data:image/png;base64,aW1nLXBhcnRpYWw=" {
+				sawPartialImage = true
+			}
+		}
+
+		if resp.Choices[0].FinishReason != nil && *resp.Choices[0].FinishReason == "stop" {
+			sawFinalImage = true
+		}
+	}
+
+	require.True(t, sawPartialImage, "expected partial image event to be emitted")
+	require.True(t, sawFinalImage, "expected final completion event to be emitted")
+}

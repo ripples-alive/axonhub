@@ -321,6 +321,7 @@ func convertImageGenerationToTool(src llm.Tool) Tool {
 		tool.Model = src.ImageGeneration.Model
 		tool.Background = src.ImageGeneration.Background
 		tool.InputFidelity = src.ImageGeneration.InputFidelity
+		tool.InputImageMask = src.ImageGeneration.InputImageMask
 		tool.Moderation = src.ImageGeneration.Moderation
 		tool.OutputCompression = src.ImageGeneration.OutputCompression
 		tool.OutputFormat = src.ImageGeneration.OutputFormat
@@ -431,7 +432,9 @@ func convertToolChoice(src *llm.ToolChoice) *ToolChoice {
 	} else if src.NamedToolChoice != nil {
 		// Specific tool choice
 		result.Type = &src.NamedToolChoice.Type
-		result.Name = &src.NamedToolChoice.Function.Name
+		if src.NamedToolChoice.Function.Name != "" {
+			result.Name = &src.NamedToolChoice.Function.Name
+		}
 	}
 
 	return result
